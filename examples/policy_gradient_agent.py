@@ -10,10 +10,14 @@ import gym
 import gym_threat_defense  # noqa
 
 
+# ONLY FOR RESULT PLOTTING
+import csv
+
+
 class DPGAgent(object):
     """Policy Gradient agent for solving the threat defense environment."""
 
-    def __init__(self, env, session, num_episodes=100, batch_size=100):
+    def __init__(self, env, session, num_episodes=1000, batch_size=100):
         """
         Setups the agent.
 
@@ -59,14 +63,8 @@ class DPGAgent(object):
         action_probs = tf.gather(tf.reshape(log_prob, [-1]), idxs)
         loss_func = -tf.reduce_sum(tf.multiply(action_probs, self.advantages))
 
-        tf.summary.histogram('action_probs', action_probs)
-
         optimizer = tf.train.AdamOptimizer(self.learning_rate)
         self.train = optimizer.minimize(loss_func)
-
-        # Init writer when graph is fully constructed
-        self.writer = \
-            tf.summary.FileWriter('/tmp/pg_agent', self.session.graph)
 
     def get_action(self, observation):
         """
@@ -110,19 +108,32 @@ class DPGAgent(object):
         # Initialize the TensorFlow graph
         self.session.run(tf.global_variables_initializer())
 
-        for n in xrange(self.batch_size):
+        all_averages = []
+        stds = []
+        all_timesteps = []
+        all_time_averages = []
+        time_stds = []
 
-            print 'batch %s' % n
+        for n in xrange(self.num_episodes):
+
+            print 'episode %s' % n
 
             # Keep track of our rewards(advantages), actions and observations
             # so we can feed these into the neural net
             advantages, actions, observations = [], [], []
+            total_rewards = []
 
-            for i in xrange(self.num_episodes):
+            for i in xrange(self.batch_size):
 
                 obs = self.env.reset()
 
+                total_reward = 0
+                timesteps = 0
+                batch_advantages = []
+
                 for k in itertools.count():
+
+                    timesteps += 1
 
                     if render:
                         self.env.render()
@@ -133,25 +144,72 @@ class DPGAgent(object):
                     action = self.get_action(obs)
                     obs, reward, done, _ = self.env.step(action)
                     actions.append(action)
-                    advantages.append(reward)
+                    total_reward += reward
+                    batch_advantages.append(reward)
 
                     if done:
                         break
 
-            avg_b_reward = np.mean(advantages)
+                total_rewards.append(total_reward)
+                all_timesteps.append(timesteps)
+
+                advantages.extend([total_reward + timesteps] * (timesteps))
+
+            avg_b_reward = np.mean(total_rewards)
             print 'avg rew: %s' % avg_b_reward
+            print 'avg time: %s' % np.mean(all_timesteps)
+            all_averages.append(avg_b_reward)
+            stds.append(np.std(total_rewards))
 
-            # Log the average reward in each batch run to TensorBoard
-            summary = tf.Summary(value=[
-                tf.Summary.Value(tag='avg_rew',
-                                 simple_value=avg_b_reward)])
-            self.writer.add_summary(summary, n)
+            all_time_averages.append(np.mean(all_timesteps))
+            time_stds.append(np.std(all_timesteps))
 
+            # advantages = map(lambda x: x, advantages)
             # Normalize all rewards
             # avoid div by zero by adding some small padding
-            advantages = (advantages - avg_b_reward) / \
+            advantages = (advantages - np.mean(advantages)) / \
                 (np.std(advantages) + 1e-10)
             self.update(observations, actions, advantages)
+
+        with open('pg_res.csv', 'w') as f:
+            writer = csv.writer(f, delimiter='\t')
+            episode_numbers = ['E'] + range(1, self.num_episodes + 1)
+            writer.writerows(zip(episode_numbers, ['A'] + all_averages))
+
+        with open('pg_res_std_high.csv', 'w') as f:
+            writer = csv.writer(f, delimiter='\t')
+            episode_numbers = ['E'] + range(1, self.num_episodes + 1)
+            stds_up = map(lambda x: x[0] + x[1], zip(all_averages, stds))
+
+            writer.writerows(zip(episode_numbers, ['V'] + stds_up))
+
+        with open('pg_res_std_low.csv', 'w') as f:
+            writer = csv.writer(f, delimiter='\t')
+            episode_numbers = ['E'] + range(1, self.num_episodes + 1)
+            stds_up = map(lambda x: x[0] - x[1], zip(all_averages, stds))
+
+            writer.writerows(zip(episode_numbers, ['V'] + stds_up))
+
+        with open('pg_time.csv', 'w') as f:
+            writer = csv.writer(f, delimiter='\t')
+            episode_numbers = ['E'] + range(1, self.num_episodes + 1)
+            writer.writerows(zip(episode_numbers, ['T'] + all_time_averages))
+
+        with open('pg_time_std_high.csv', 'w') as f:
+            writer = csv.writer(f, delimiter='\t')
+            episode_numbers = ['E'] + range(1, self.num_episodes + 1)
+            stds_up = map(lambda x: x[0] + x[1], zip(all_time_averages,
+                                                     time_stds))
+
+            writer.writerows(zip(episode_numbers, ['V'] + stds_up))
+
+        with open('pg_time_std_low.csv', 'w') as f:
+            writer = csv.writer(f, delimiter='\t')
+            episode_numbers = ['E'] + range(1, self.num_episodes + 1)
+            stds_up = map(lambda x: x[0] - x[1], zip(all_time_averages,
+                                                     time_stds))
+
+            writer.writerows(zip(episode_numbers, ['V'] + stds_up))
 
 
 if __name__ == '__main__':
@@ -160,4 +218,4 @@ if __name__ == '__main__':
     sess = tf.InteractiveSession()
     pg_agent = DPGAgent(env, sess)
 
-    pg_agent.run()
+    pg_agent.run(render=False)
